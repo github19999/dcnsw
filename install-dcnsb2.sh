@@ -6,7 +6,7 @@ echo "🔄 更新系统..."
 apt update -y && apt upgrade -y
 
 echo "📦 安装必要组件..."
-apt install -y curl wget unzip git sudo nano vim
+apt install -y curl wget unzip git sudo nano vim docker.io docker-compose
 
 echo "🕒 设置时区为上海..."
 timedatectl set-timezone Asia/Shanghai
