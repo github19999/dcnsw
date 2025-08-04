@@ -1,13 +1,9 @@
 #!/bin/bash
-
 set -e
-
 echo "🔄 更新系统..."
 apt update -y
-
 echo "📦 安装必要组件..."
 apt install -y curl wget unzip git openssl
-
 echo "🐳 安装 Docker（官方脚本）..."
 if ! command -v docker >/dev/null 2>&1; then
   curl -fsSL https://get.docker.com -o get-docker.sh
@@ -16,35 +12,27 @@ if ! command -v docker >/dev/null 2>&1; then
 else
   echo "🐳 Docker 已安装，跳过安装步骤"
 fi
-
 echo "🔧 启动 Docker 并设置开机自启..."
 systemctl enable docker
 systemctl start docker
-
 echo "⏰ 设置系统时区为上海"
 timedatectl set-timezone Asia/Shanghai
-
 # ------------------------------
 # 部署 Sub-Store
 # ------------------------------
 echo "📁 创建 Sub-Store 目录并准备环境..."
 mkdir -p /root/docker/substore
 cd /root/docker/substore
-
 API_PATH=$(openssl rand -hex 12)
 echo "🔐 Sub-Store API 路径：/$API_PATH"
-
 echo "⬇️ 下载 Sub-Store 后端..."
 curl -fsSL https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js -o sub-store.bundle.js
-
 echo "⬇️ 下载 Sub-Store 前端..."
 curl -fsSL https://github.com/sub-store-org/Sub-Store-Front-End/releases/latest/download/dist.zip -o dist.zip
 unzip -o dist.zip && mv dist frontend && rm dist.zip
-
 echo "📋 写入 Sub-Store docker-compose.yml..."
 cat > docker-compose.yml <<EOF
 version: '3.8'
-
 services:
   substore:
     image: node:20.18.0
@@ -56,7 +44,7 @@ services:
       - "3001:3001"
     environment:
       SUB_STORE_FRONTEND_BACKEND_PATH: "/$API_PATH"
-      SUB_STORE_BACKEND_CRON: "0 0 * * *"
+      SUB_STORE_BACKEND_CRON: "0 0 * **"
       SUB_STORE_FRONTEND_PATH: "/app/frontend"
       SUB_STORE_FRONTEND_HOST: "0.0.0.0"
       SUB_STORE_FRONTEND_PORT: "3001"
@@ -68,21 +56,17 @@ services:
       - ./frontend:/app/frontend
       - ./data:/app/data
 EOF
-
 echo "🚀 启动 Sub-Store 容器..."
 docker compose up -d
-
 # ------------------------------
 # 部署 Wallos
 # ------------------------------
 echo "📁 创建 Wallos 目录..."
 mkdir -p /root/docker/wallos
 cd /root/docker/wallos
-
 echo "📋 写入 Wallos docker-compose.yml..."
 cat > docker-compose.yml <<EOF
 version: '3.0'
-
 services:
   wallos:
     container_name: wallos
@@ -96,15 +80,12 @@ services:
       - './logos:/var/www/html/images/uploads/logos'
     restart: unless-stopped
 EOF
-
 echo "🚀 启动 Wallos 容器..."
 docker compose up -d
-
 # ------------------------------
 # 完成提示
 # ------------------------------
 IP=$(curl -s https://ipinfo.io/ip || echo "<你的IP>")
-
 echo
 echo "✅ 所有项目安装完成！"
 echo "🔗 Sub-Store访问地址: http://$IP:3001/?api=http://$IP:3001/$API_PATH"
