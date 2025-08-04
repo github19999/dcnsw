@@ -1,3 +1,5 @@
+#端口和reality(2)冲突，修改了NPM端口映射
+
 #!/bin/bash
 
 set -e
