@@ -1,5 +1,3 @@
-#端口和reality(2)冲突，修改了NPM端口映射
-
 #!/bin/bash
 
 set -e
@@ -75,33 +73,6 @@ echo "🚀 启动 Sub-Store 容器..."
 docker compose up -d
 
 # ------------------------------
-# 部署 Nginx Proxy Manager (npm)
-# ------------------------------
-echo "📁 创建 Nginx Proxy Manager 目录..."
-mkdir -p /root/docker/npm
-cd /root/docker/npm
-
-echo "📋 写入 Nginx Proxy Manager docker-compose.yml..."
-cat > docker-compose.yml <<EOF
-version: '3.8'
-
-services:
-  app:
-    image: 'jc21/nginx-proxy-manager:latest'
-    restart: unless-stopped
-    ports:
-      - '8080:80'
-      - '81:81'
-      - '8444:443'
-    volumes:
-      - ./data:/data
-      - ./letsencrypt:/etc/letsencrypt
-EOF
-
-echo "🚀 启动 Nginx Proxy Manager 容器..."
-docker compose up -d
-
-# ------------------------------
 # 部署 Wallos
 # ------------------------------
 echo "📁 创建 Wallos 目录..."
@@ -137,8 +108,6 @@ IP=$(curl -s https://ipinfo.io/ip || echo "<你的IP>")
 echo
 echo "✅ 所有项目安装完成！"
 echo "🔗 Sub-Store访问地址: http://$IP:3001/?api=http://$IP:3001/$API_PATH"
-echo "🔗 Nginx Proxy Manager管理面板: http://$IP:81"
-echo "    默认登录：admin@example.com / changeme"
 echo "🔗 Wallos访问地址: http://$IP:8282/"
 echo
 echo "🌐 建议绑定域名并使用 CDN 保护你的服务器 IP。"
