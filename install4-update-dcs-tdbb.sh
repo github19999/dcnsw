@@ -40,6 +40,7 @@ show_help() {
     echo "选项："
     echo "  -h, --help              显示此帮助信息"
     echo "  -l, --list              列出可用版本"
+    echo "  -i, --interactive       交互式选择版本"
     echo "  -c, --current           显示当前版本信息"
     echo "  -f, --force             强制更新（跳过版本检查）"
     echo "  --backend-only          仅更新后端"
@@ -52,11 +53,13 @@ show_help() {
     echo
     echo "示例："
     echo "  $0                      # 更新到最新版本"
+    echo "  $0 -i                   # 交互式选择版本"
     echo "  $0 latest               # 更新到最新版本"
     echo "  $0 v2.14.180           # 更新到 v2.14.180"
     echo "  $0 2.14.180            # 更新到 v2.14.180"
     echo "  $0 -l                   # 列出可用版本"
     echo "  $0 --backend-only v2.14.180  # 仅更新后端到指定版本"
+    echo "  $0 -i --frontend-only   # 交互式选择前端版本"
 }
 
 # 获取GitHub API的版本列表
@@ -82,6 +85,92 @@ get_available_versions() {
         while read version; do
             echo "  🎨 $version"
         done
+}
+
+# 交互式版本选择
+interactive_version_select() {
+    log_info "获取可用版本..."
+    
+    # 获取后端版本列表
+    BACKEND_VERSIONS=($(curl -s "https://api.github.com/repos/sub-store-org/Sub-Store/releases" | \
+        grep '"tag_name":' | head -15 | \
+        sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'))
+    
+    # 获取前端版本列表
+    FRONTEND_VERSIONS=($(curl -s "https://api.github.com/repos/sub-store-org/Sub-Store-Front-End/releases" | \
+        grep '"tag_name":' | head -15 | \
+        sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'))
+    
+    if [ ${#BACKEND_VERSIONS[@]} -eq 0 ] || [ ${#FRONTEND_VERSIONS[@]} -eq 0 ]; then
+        log_error "无法获取版本信息，请检查网络连接"
+        exit 1
+    fi
+    
+    echo
+    echo "🎯 ============================================="
+    echo "🎯        Sub-Store 版本选择"
+    echo "🎯 ============================================="
+    echo
+    
+    # 显示更新范围
+    if [ "$UPDATE_BACKEND" = true ] && [ "$UPDATE_FRONTEND" = true ]; then
+        log_version "更新范围: 后端 + 前端（将自动匹配兼容版本）"
+        VERSIONS=("${BACKEND_VERSIONS[@]}")
+        REPO_TYPE="backend"
+    elif [ "$UPDATE_BACKEND" = true ]; then
+        log_version "更新范围: 仅后端"
+        VERSIONS=("${BACKEND_VERSIONS[@]}")
+        REPO_TYPE="backend"
+    elif [ "$UPDATE_FRONTEND" = true ]; then
+        log_version "更新范围: 仅前端"
+        VERSIONS=("${FRONTEND_VERSIONS[@]}")
+        REPO_TYPE="frontend"
+    fi
+    
+    echo
+    echo "📦 可用版本列表："
+    echo "   0) latest (最新版本)"
+    
+    for i in "${!VERSIONS[@]}"; do
+        local index=$((i + 1))
+        local version="${VERSIONS[i]}"
+        if [ $i -eq 0 ]; then
+            echo "   $index) $version (当前最新)"
+        else
+            echo "   $index) $version"
+        fi
+    done
+    
+    echo
+    echo -n "请选择要更新的版本 [0-${#VERSIONS[@]}]: "
+    read -r choice
+    
+    # 验证输入
+    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -gt ${#VERSIONS[@]} ]; then
+        log_error "无效的选择，请输入 0-${#VERSIONS[@]} 之间的数字"
+        exit 1
+    fi
+    
+    if [ "$choice" -eq 0 ]; then
+        SELECTED_VERSION="latest"
+        log_version "已选择: latest (最新版本)"
+    else
+        local index=$((choice - 1))
+        SELECTED_VERSION="${VERSIONS[index]}"
+        log_version "已选择: $SELECTED_VERSION"
+    fi
+    
+    # 确认选择
+    echo
+    echo -n "确认更新到版本 $SELECTED_VERSION? [y/N]: "
+    read -r confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        log_warn "更新已取消"
+        exit 0
+    fi
+    
+    return 0
 }
 
 # 获取当前版本信息
@@ -170,6 +259,7 @@ parse_arguments() {
     UPDATE_FRONTEND=true
     TARGET_VERSION="latest"
     FORCE_UPDATE=false
+    INTERACTIVE_MODE=false
     
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -180,6 +270,10 @@ parse_arguments() {
             -l|--list)
                 get_available_versions
                 exit 0
+                ;;
+            -i|--interactive)
+                INTERACTIVE_MODE=true
+                shift
                 ;;
             -c|--current)
                 get_current_version
@@ -205,7 +299,9 @@ parse_arguments() {
                 exit 1
                 ;;
             *)
-                TARGET_VERSION="$1"
+                if [ "$INTERACTIVE_MODE" = false ]; then
+                    TARGET_VERSION="$1"
+                fi
                 shift
                 ;;
         esac
