@@ -52,18 +52,27 @@ show_help() {
     echo "  v2.14.180              更新到指定版本"
     echo "  2.14.180               更新到指定版本（自动添加v前缀）"
     echo
+    echo "一键运行方式："
+    echo "  # 自动选择（显示版本列表，10秒超时）"
+    echo "  bash <(curl -sSL 脚本地址)"
+    echo
+    echo "  # 指定版本"
+    echo "  SUBSTORE_VERSION=v2.14.204 bash <(curl -sSL 脚本地址)"
+    echo
+    echo "  # 自动使用最新版本（跳过选择）"
+    echo "  SUBSTORE_AUTO=true bash <(curl -sSL 脚本地址)"
+    echo
     echo "智能模式："
-    echo "  - 交互式终端：显示版本选择菜单"
-    echo "  - 管道运行：自动使用最新版本"
-    echo "  - 支持数字选择或直接输入版本号"
+    echo "  - 交互式终端：显示完整版本选择菜单"
+    echo "  - 一键运行：显示版本列表 + 10秒输入时间"
+    echo "  - 环境变量：SUBSTORE_VERSION 指定版本"
+    echo "  - 自动模式：SUBSTORE_AUTO=true 跳过选择"
     echo
     echo "示例："
     echo "  $0                      # 智能模式（推荐）"
     echo "  $0 -i                   # 强制交互选择"
-    echo "  $0 -s                   # 智能选择"
     echo "  $0 v2.14.180           # 更新到指定版本"
     echo "  $0 -l                   # 列出可用版本"
-    echo "  bash <(curl -sSL url)   # 一键运行（自动选择）"
 }
 
 # 获取GitHub API的版本列表
@@ -219,18 +228,102 @@ smart_version_select() {
         interactive_version_select
         TARGET_VERSION="$SELECTED_VERSION"
     else
-        # 通过管道运行，使用默认版本
-        log_warn "检测到非交互式运行，将使用最新版本"
-        TARGET_VERSION="latest"
+        # 通过管道运行，提供环境变量控制
+        log_warn "检测到非交互式运行（如一键脚本）"
         
-        # 等待3秒给用户机会取消
-        log_info "3秒后将自动使用最新版本，按 Ctrl+C 可取消..."
-        for i in 3 2 1; do
-            echo -n "$i... "
-            sleep 1
-        done
+        # 检查环境变量
+        if [ -n "$SUBSTORE_VERSION" ]; then
+            TARGET_VERSION="$SUBSTORE_VERSION"
+            log_version "从环境变量获取版本: $TARGET_VERSION"
+        else
+            # 显示可用版本并提供选择方式
+            show_onekey_version_options
+            
+            # 等待用户输入或使用默认版本
+            if [ -n "$SUBSTORE_AUTO" ] && [ "$SUBSTORE_AUTO" = "true" ]; then
+                TARGET_VERSION="latest"
+                log_version "自动模式，使用最新版本: latest"
+            else
+                wait_for_version_input
+            fi
+        fi
+    fi
+}
+
+# 一键脚本版本选择展示
+show_onekey_version_options() {
+    log_info "获取可用版本..."
+    
+    # 获取版本列表
+    BACKEND_VERSIONS=($(curl -s "https://api.github.com/repos/sub-store-org/Sub-Store/releases" | \
+        grep '"tag_name":' | head -10 | \
+        sed 's/.*"tag_name": *"\([^"]*\)".*/\1/'))
+    
+    if [ ${#BACKEND_VERSIONS[@]} -eq 0 ]; then
+        log_error "无法获取版本信息，将使用最新版本"
+        TARGET_VERSION="latest"
+        return
+    fi
+    
+    echo
+    echo "🎯 ============================================="
+    echo "🎯        Sub-Store 一键安装版本选择"
+    echo "🎯 ============================================="
+    echo
+    log_version "可用版本（最新10个）："
+    echo "   📦 latest (最新版本)"
+    for i in "${!BACKEND_VERSIONS[@]}"; do
+        local version="${BACKEND_VERSIONS[i]}"
+        if [ $i -eq 0 ]; then
+            echo "   📦 $version (当前最新)"
+        else
+            echo "   📦 $version"
+        fi
+    done
+    
+    echo
+    echo "🚀 快速选择方式："
+    echo "   1️⃣  按 Ctrl+C 终止，然后使用："
+    echo "       SUBSTORE_VERSION=v2.14.204 bash <(curl -sSL 脚本地址)"
+    echo
+    echo "   2️⃣  等待 10 秒自动使用最新版本"
+    echo
+    echo "   3️⃣  现在输入版本号 (如: v2.14.204 或 latest):"
+}
+
+# 等待版本输入（一键脚本模式）
+wait_for_version_input() {
+    local timeout=10
+    local count=0
+    
+    echo -n "请在 ${timeout} 秒内输入版本号 (默认: latest): "
+    
+    # 尝试读取用户输入，设置超时
+    if read -t $timeout -r user_input; then
+        if [ -n "$user_input" ]; then
+            if [[ "$user_input" =~ ^(latest|LATEST)$ ]]; then
+                TARGET_VERSION="latest"
+                log_version "用户选择: latest (最新版本)"
+            elif [[ "$user_input" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+                TARGET_VERSION="$user_input"
+                if [[ ! "$user_input" =~ ^v ]]; then
+                    DISPLAY_VERSION="v$user_input"
+                else
+                    DISPLAY_VERSION="$user_input"
+                fi
+                log_version "用户选择: $DISPLAY_VERSION"
+            else
+                log_warn "输入格式无效，使用默认版本: latest"
+                TARGET_VERSION="latest"
+            fi
+        else
+            TARGET_VERSION="latest"
+            log_version "使用默认版本: latest"
+        fi
+    else
         echo
-        log_version "已自动选择: latest (最新版本)"
+        TARGET_VERSION="latest"
+        log_version "超时，使用默认版本: latest"
     fi
 }
 
