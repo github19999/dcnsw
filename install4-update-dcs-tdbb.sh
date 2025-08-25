@@ -41,6 +41,7 @@ show_help() {
     echo "  -h, --help              显示此帮助信息"
     echo "  -l, --list              列出可用版本"
     echo "  -i, --interactive       交互式选择版本"
+    echo "  -s, --smart             智能版本选择（默认）"
     echo "  -c, --current           显示当前版本信息"
     echo "  -f, --force             强制更新（跳过版本检查）"
     echo "  --backend-only          仅更新后端"
@@ -51,15 +52,18 @@ show_help() {
     echo "  v2.14.180              更新到指定版本"
     echo "  2.14.180               更新到指定版本（自动添加v前缀）"
     echo
+    echo "智能模式："
+    echo "  - 交互式终端：显示版本选择菜单"
+    echo "  - 管道运行：自动使用最新版本"
+    echo "  - 支持数字选择或直接输入版本号"
+    echo
     echo "示例："
-    echo "  $0                      # 更新到最新版本"
-    echo "  $0 -i                   # 交互式选择版本"
-    echo "  $0 latest               # 更新到最新版本"
-    echo "  $0 v2.14.180           # 更新到 v2.14.180"
-    echo "  $0 2.14.180            # 更新到 v2.14.180"
+    echo "  $0                      # 智能模式（推荐）"
+    echo "  $0 -i                   # 强制交互选择"
+    echo "  $0 -s                   # 智能选择"
+    echo "  $0 v2.14.180           # 更新到指定版本"
     echo "  $0 -l                   # 列出可用版本"
-    echo "  $0 --backend-only v2.14.180  # 仅更新后端到指定版本"
-    echo "  $0 -i --frontend-only   # 交互式选择前端版本"
+    echo "  bash <(curl -sSL url)   # 一键运行（自动选择）"
 }
 
 # 获取GitHub API的版本列表
@@ -142,27 +146,60 @@ interactive_version_select() {
     done
     
     echo
-    echo -n "请选择要更新的版本 [0-${#VERSIONS[@]}]: "
+    echo "💡 提示："
+    echo "   - 输入数字 (0-${#VERSIONS[@]}) 从列表中选择版本"
+    echo "   - 或直接输入版本号，如: v2.14.204 或 2.14.204"
+    echo "   - 输入 'latest' 选择最新版本"
+    echo
+    echo -n "请选择版本: "
     read -r choice
     
-    # 验证输入
-    if [[ ! "$choice" =~ ^[0-9]+$ ]] || [ "$choice" -lt 0 ] || [ "$choice" -gt ${#VERSIONS[@]} ]; then
-        log_error "无效的选择，请输入 0-${#VERSIONS[@]} 之间的数字"
-        exit 1
-    fi
-    
-    if [ "$choice" -eq 0 ]; then
+    # 处理用户输入
+    if [[ "$choice" =~ ^[0-9]+$ ]]; then
+        # 数字选择
+        if [ "$choice" -lt 0 ] || [ "$choice" -gt ${#VERSIONS[@]} ]; then
+            log_error "无效的选择，请输入 0-${#VERSIONS[@]} 之间的数字"
+            exit 1
+        fi
+        
+        if [ "$choice" -eq 0 ]; then
+            SELECTED_VERSION="latest"
+            log_version "已选择: latest (最新版本)"
+        else
+            local index=$((choice - 1))
+            SELECTED_VERSION="${VERSIONS[index]}"
+            log_version "已选择: $SELECTED_VERSION"
+        fi
+    elif [[ "$choice" =~ ^(latest|LATEST)$ ]]; then
+        # latest 选择
         SELECTED_VERSION="latest"
         log_version "已选择: latest (最新版本)"
+    elif [[ "$choice" =~ ^v?[0-9]+\.[0-9]+\.[0-9]+.*$ ]]; then
+        # 版本号输入
+        SELECTED_VERSION="$choice"
+        # 确保版本号有v前缀用于显示
+        if [[ ! "$choice" =~ ^v ]]; then
+            DISPLAY_VERSION="v$choice"
+        else
+            DISPLAY_VERSION="$choice"
+        fi
+        log_version "已选择: $DISPLAY_VERSION (手动输入)"
     else
-        local index=$((choice - 1))
-        SELECTED_VERSION="${VERSIONS[index]}"
-        log_version "已选择: $SELECTED_VERSION"
+        log_error "无效的输入格式"
+        log_warn "请输入："
+        log_warn "  - 数字 (0-${#VERSIONS[@]})"
+        log_warn "  - 版本号 (如: v2.14.204 或 2.14.204)"
+        log_warn "  - latest"
+        exit 1
     fi
     
     # 确认选择
     echo
-    echo -n "确认更新到版本 $SELECTED_VERSION? [y/N]: "
+    if [ "$SELECTED_VERSION" = "latest" ]; then
+        echo -n "确认更新到最新版本? [y/N]: "
+    else
+        echo -n "确认更新到版本 $SELECTED_VERSION? [y/N]: "
+    fi
     read -r confirm
     
     if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
@@ -171,6 +208,30 @@ interactive_version_select() {
     fi
     
     return 0
+}
+
+# 智能版本选择（自动检测是否需要交互）
+smart_version_select() {
+    # 检查是否通过管道运行（如 curl | bash）
+    if [ -t 0 ]; then
+        # 标准输入可用，可以进行交互
+        log_info "检测到交互式终端，启动版本选择..."
+        interactive_version_select
+        TARGET_VERSION="$SELECTED_VERSION"
+    else
+        # 通过管道运行，使用默认版本
+        log_warn "检测到非交互式运行，将使用最新版本"
+        TARGET_VERSION="latest"
+        
+        # 等待3秒给用户机会取消
+        log_info "3秒后将自动使用最新版本，按 Ctrl+C 可取消..."
+        for i in 3 2 1; do
+            echo -n "$i... "
+            sleep 1
+        done
+        echo
+        log_version "已自动选择: latest (最新版本)"
+    fi
 }
 
 # 获取当前版本信息
@@ -260,6 +321,12 @@ parse_arguments() {
     TARGET_VERSION="latest"
     FORCE_UPDATE=false
     INTERACTIVE_MODE=false
+    SMART_MODE=false
+    
+    # 如果没有参数，默认使用智能模式
+    if [ $# -eq 0 ]; then
+        SMART_MODE=true
+    fi
     
     while [[ $# -gt 0 ]]; do
         case $1 in
@@ -273,6 +340,12 @@ parse_arguments() {
                 ;;
             -i|--interactive)
                 INTERACTIVE_MODE=true
+                SMART_MODE=false
+                shift
+                ;;
+            -s|--smart)
+                SMART_MODE=true
+                INTERACTIVE_MODE=false
                 shift
                 ;;
             -c|--current)
@@ -299,7 +372,7 @@ parse_arguments() {
                 exit 1
                 ;;
             *)
-                if [ "$INTERACTIVE_MODE" = false ]; then
+                if [ "$INTERACTIVE_MODE" = false ] && [ "$SMART_MODE" = false ]; then
                     TARGET_VERSION="$1"
                 fi
                 shift
@@ -386,6 +459,9 @@ main() {
     fi
     
     cd "$SUBSTORE_DIR"
+    
+    # 解析命令行参数
+    parse_arguments "$@"
     
     # 创建临时备份目录
     TEMP_BACKUP_DIR="/tmp/substore_backup_$(date +%s)"
