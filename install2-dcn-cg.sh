@@ -1,76 +1,152 @@
 #!/bin/bash
+set -euo pipefail  # Added -u and -o pipefail for better error handling
 
-# Nginx Proxy Manager Docker Deployment Script
-# Deploys: Nginx Proxy Manager only
-# Author: Auto-deployment script
-# Date: $(date +%Y-%m-%d)
-
-set -e
-
-# Color codes for output
+# Color codes for better output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-# Logging function
-log() {
-    echo -e "${GREEN}[$(date '+%Y-%m-%d %H:%M:%S')]${NC} $1"
+# Function to print colored output
+print_status() {
+    echo -e "${GREEN}$1${NC}"
 }
 
-error() {
-    echo -e "${RED}[ERROR]${NC} $1" >&2
+print_warning() {
+    echo -e "${YELLOW}$1${NC}"
 }
 
-warning() {
-    echo -e "${YELLOW}[WARNING]${NC} $1"
+print_error() {
+    echo -e "${RED}$1${NC}"
 }
 
 # Check if running as root
 if [[ $EUID -ne 0 ]]; then
-   error "This script must be run as root"
+   print_error "此脚本需要root权限运行"
    exit 1
 fi
 
-# System update and package installation
-log "🔄 Updating system packages..."
-apt update -y
+print_status "🔄 更新系统..."
+apt update -y && apt upgrade -y
 
-log "📦 Installing essential packages..."
-apt install -y curl wget unzip git openssl
+print_status "📦 安装必要组件..."
+apt install -y curl wget unzip git openssl ufw fail2ban
 
-# Docker installation
-log "🐳 Installing Docker..."
+print_status "🔒 配置基础安全设置..."
+# Configure UFW firewall
+ufw --force enable
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow ssh
+ufw allow 80/tcp
+ufw allow 81/tcp
+ufw allow 443/tcp
+ufw allow 3001/tcp
+ufw allow 8282/tcp
+
+print_status "🐳 安装 Docker（官方脚本）..."
 if ! command -v docker >/dev/null 2>&1; then
     curl -fsSL https://get.docker.com -o get-docker.sh
+    # Verify the script (basic check)
+    if [[ ! -f get-docker.sh ]]; then
+        print_error "Docker安装脚本下载失败"
+        exit 1
+    fi
     sh get-docker.sh
     rm get-docker.sh
-    log "✅ Docker installed successfully"
 else
-    log "🐳 Docker already installed, skipping..."
+    print_status "🐳 Docker 已安装，跳过安装步骤"
 fi
 
-# Start Docker service
-log "🔧 Starting Docker service and enabling auto-start..."
+# Install Docker Compose if not present
+if ! command -v docker-compose >/dev/null 2>&1; then
+    print_status "📦 安装 Docker Compose..."
+    curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+    chmod +x /usr/local/bin/docker-compose
+fi
+
+print_status "🔧 启动 Docker 并设置开机自启..."
 systemctl enable docker
 systemctl start docker
 
-# Set timezone
-log "⏰ Setting timezone to Asia/Shanghai..."
+print_status "⏰ 设置系统时区为上海"
 timedatectl set-timezone Asia/Shanghai
 
-# Create base directory
+# Create main docker directory with proper permissions
 mkdir -p /root/docker
-cd /root/docker
+chmod 700 /root/docker
 
 # ------------------------------
-# Deploy Nginx Proxy Manager
+# 部署 Sub-Store
 # ------------------------------
-log "📁 Setting up Nginx Proxy Manager..."
-mkdir -p /root/docker/npm
+print_status "📁 创建 Sub-Store 目录并准备环境..."
+mkdir -p /root/docker/substore/data
+cd /root/docker/substore
+
+# Generate a more secure API path
+API_PATH=$(openssl rand -base64 32 | tr -d "=+/" | cut -c1-16)
+print_status "🔐 Sub-Store API 路径：/$API_PATH"
+
+print_status "⬇️ 下载 Sub-Store 后端..."
+if ! curl -fsSL https://github.com/sub-store-org/Sub-Store/releases/latest/download/sub-store.bundle.js -o sub-store.bundle.js; then
+    print_error "Sub-Store 后端下载失败"
+    exit 1
+fi
+
+print_status "⬇️ 下载 Sub-Store 前端..."
+if ! curl -fsSL https://github.com/sub-store-org/Sub-Store-Front-End/releases/latest/download/dist.zip -o dist.zip; then
+    print_error "Sub-Store 前端下载失败"
+    exit 1
+fi
+
+unzip -o dist.zip && mv dist frontend && rm dist.zip
+
+print_status "📋 写入 Sub-Store docker-compose.yml..."
+cat > docker-compose.yml <<EOF
+version: '3.8'
+services:
+  substore:
+    image: node:20.18.0-alpine  # Using alpine for smaller size
+    container_name: substore
+    restart: unless-stopped
+    working_dir: /app
+    command: ["node", "sub-store.bundle.js"]
+    ports:
+      - "127.0.0.1:3001:3001"  # Bind to localhost only
+    environment:
+      SUB_STORE_FRONTEND_BACKEND_PATH: "/$API_PATH"
+      SUB_STORE_BACKEND_CRON: "0 0 * * *"
+      SUB_STORE_FRONTEND_PATH: "/app/frontend"
+      SUB_STORE_FRONTEND_HOST: "0.0.0.0"
+      SUB_STORE_FRONTEND_PORT: "3001"
+      SUB_STORE_DATA_BASE_PATH: "/app"
+      SUB_STORE_BACKEND_API_HOST: "127.0.0.1"
+      SUB_STORE_BACKEND_API_PORT: "3000"
+      NODE_ENV: "production"
+    volumes:
+      - ./sub-store.bundle.js:/app/sub-store.bundle.js:ro
+      - ./frontend:/app/frontend:ro
+      - ./data:/app/data
+    user: "1000:1000"  # Run as non-root user
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+EOF
+
+print_status "🚀 启动 Sub-Store 容器..."
+docker-compose up -d
+
+# ------------------------------
+# 部署 Nginx Proxy Manager (npm)
+# ------------------------------
+print_status "📁 创建 Nginx Proxy Manager 目录..."
+mkdir -p /root/docker/npm/{data,letsencrypt}
 cd /root/docker/npm
 
+print_status "📋 写入 Nginx Proxy Manager docker-compose.yml..."
 cat > docker-compose.yml <<EOF
 version: '3.8'
 services:
@@ -82,213 +158,118 @@ services:
       - '80:80'
       - '81:81'
       - '443:443'
+    environment:
+      DB_SQLITE_FILE: "/data/database.sqlite"
+      DISABLE_IPV6: 'true'
     volumes:
       - ./data:/data
       - ./letsencrypt:/etc/letsencrypt
-    environment:
-      DB_SQLITE_FILE: "/data/database.sqlite"
     healthcheck:
       test: ["CMD", "/bin/check-health"]
       interval: 10s
       timeout: 3s
+EOF
+
+print_status "🚀 启动 Nginx Proxy Manager 容器..."
+docker-compose up -d
+
+# ------------------------------
+# 部署 Wallos
+# ------------------------------
+print_status "📁 创建 Wallos 目录..."
+mkdir -p /root/docker/wallos/{db,logos}
+cd /root/docker/wallos
+
+print_status "📋 写入 Wallos docker-compose.yml..."
+cat > docker-compose.yml <<EOF
+version: '3.8'
+services:
+  wallos:
+    container_name: wallos
+    image: bellamy/wallos:2.39.0
+    ports:
+      - "127.0.0.1:8282:80"  # Bind to localhost only
+    environment:
+      TZ: 'Asia/Shanghai'
+    volumes:
+      - './db:/var/www/html/db'
+      - './logos:/var/www/html/images/uploads/logos'
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80"]
+      interval: 30s
+      timeout: 10s
       retries: 3
 EOF
 
-log "🚀 Starting Nginx Proxy Manager container..."
-docker compose up -d
+print_status "🚀 启动 Wallos 容器..."
+docker-compose up -d
 
 # ------------------------------
-# Final setup and information
+# 创建备份脚本
 # ------------------------------
-
-# Get server IP
-log "🔍 Detecting server IP address..."
-SERVER_IP=$(curl -s --connect-timeout 10 https://ipinfo.io/ip 2>/dev/null || curl -s --connect-timeout 10 http://ifconfig.me 2>/dev/null || echo "YOUR_SERVER_IP")
-
-# Wait for service to start
-log "⏳ Waiting for Nginx Proxy Manager to initialize..."
-sleep 15
-
-# Check service status
-log "🔍 Checking service status..."
-if docker ps --format "table {{.Names}}" | grep -q "nginx-proxy-manager"; then
-    log "✅ Nginx Proxy Manager is running"
-else
-    warning "⚠️  Nginx Proxy Manager may not be running properly"
-fi
-
-# Display completion message
-echo
-echo "=================================================================================="
-log "🎉 Nginx Proxy Manager has been deployed successfully!"
-echo "=================================================================================="
-echo
-echo -e "${BLUE}📋 Service Access Information:${NC}"
-echo "└── 🔗 Nginx Proxy Manager: http://$SERVER_IP:81"
-echo "    └── Default credentials: admin@example.com / changeme"
-echo
-echo -e "${YELLOW}📋 Management Commands:${NC}"
-echo "├── View container status: docker ps"
-echo "├── View NPM logs: docker logs nginx-proxy-manager"
-echo "├── Restart NPM: docker restart nginx-proxy-manager"
-echo "└── Stop NPM: docker stop nginx-proxy-manager"
-echo
-echo -e "${YELLOW}🔧 Configuration Tips:${NC}"
-echo "├── First login will prompt you to change admin credentials"
-echo "├── Configure your domain names and SSL certificates"
-echo "├── Use 'Proxy Host' to forward domains to internal services"
-echo "└── Enable 'Force SSL' for better security"
-echo
-echo -e "${YELLOW}🔒 Security Recommendations:${NC}"
-echo "├── Change default admin password immediately"
-if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
-    echo "├── Configure firewall rules (allow ports $ADMIN_PORT"
-    [ -n "$HTTP_PORT" ] && echo -n ", $HTTP_PORT"
-    [ -n "$HTTPS_PORT" ] && echo -n ", $HTTPS_PORT"
-    echo ")"
-else
-    echo "├── Configure firewall rules (allow ports 80, 443, $ADMIN_PORT)"
-fi
-echo "├── Use strong SSL certificates (Let's Encrypt recommended)"
-echo "├── Consider restricting access to port $ADMIN_PORT (admin panel)"
-echo "└── Regular backups of /root/docker/npm/data directory"
-echo
-echo -e "${BLUE}📂 File Locations:${NC}"
-echo "├── Docker Compose: /root/docker/npm/docker-compose.yml"
-echo "├── NPM Data: /root/docker/npm/data/"
-echo "└── SSL Certificates: /root/docker/npm/letsencrypt/"
-echo
-echo "=================================================================================="
-
-# Create management script
-log "📝 Creating management script..."
-cat > /root/docker/manage-npm.sh <<'EOF'
+print_status "📝 创建备份脚本..."
+cat > /root/backup_docker_services.sh <<'EOF'
 #!/bin/bash
+BACKUP_DIR="/root/backups"
+DATE=$(date +%Y%m%d_%H%M%S)
 
-show_status() {
-    echo "=== Nginx Proxy Manager Status ==="
-    docker ps --filter "name=nginx-proxy-manager" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
-    echo
-    echo "=== Container Health ==="
-    docker inspect nginx-proxy-manager --format='{{.State.Health.Status}}' 2>/dev/null || echo "Health check not available"
-}
+mkdir -p $BACKUP_DIR
 
-show_logs() {
-    echo "=== Nginx Proxy Manager Logs ==="
-    docker logs -f nginx-proxy-manager
-}
+# Backup Sub-Store data
+tar -czf $BACKUP_DIR/substore_$DATE.tar.gz -C /root/docker/substore data
 
-restart_npm() {
-    echo "=== Restarting Nginx Proxy Manager ==="
-    docker restart nginx-proxy-manager
-    echo "✅ Nginx Proxy Manager restarted"
-}
+# Backup Nginx Proxy Manager data
+tar -czf $BACKUP_DIR/npm_$DATE.tar.gz -C /root/docker/npm data letsencrypt
 
-stop_npm() {
-    echo "=== Stopping Nginx Proxy Manager ==="
-    docker stop nginx-proxy-manager
-    echo "✅ Nginx Proxy Manager stopped"
-}
+# Backup Wallos data
+tar -czf $BACKUP_DIR/wallos_$DATE.tar.gz -C /root/docker/wallos db logos
 
-start_npm() {
-    echo "=== Starting Nginx Proxy Manager ==="
-    cd /root/docker/npm
-    docker compose up -d
-    echo "✅ Nginx Proxy Manager started"
-}
+# Keep only last 7 backups
+find $BACKUP_DIR -name "*.tar.gz" -mtime +7 -delete
 
-backup_npm() {
-    BACKUP_DIR="/root/backups/npm_$(date +%Y%m%d_%H%M%S)"
-    mkdir -p "$BACKUP_DIR"
-    echo "=== Creating backup at $BACKUP_DIR ==="
-    cp -r /root/docker/npm/data "$BACKUP_DIR/"
-    cp -r /root/docker/npm/letsencrypt "$BACKUP_DIR/" 2>/dev/null || true
-    echo "✅ Backup completed: $BACKUP_DIR"
-}
-
-case "$1" in
-    status)
-        show_status
-        ;;
-    logs)
-        show_logs
-        ;;
-    restart)
-        restart_npm
-        ;;
-    stop)
-        stop_npm
-        ;;
-    start)
-        start_npm
-        ;;
-    backup)
-        backup_npm
-        ;;
-    *)
-        echo "Usage: $0 {status|logs|restart|stop|start|backup}"
-        echo
-        echo "Commands:"
-        echo "  status   - Show Nginx Proxy Manager status"
-        echo "  logs     - Show and follow NPM logs"
-        echo "  restart  - Restart NPM container"
-        echo "  stop     - Stop NPM container"
-        echo "  start    - Start NPM container"
-        echo "  backup   - Create backup of NPM data"
-        echo
-        echo "Examples:"
-        echo "  $0 status    - Check if NPM is running"
-        echo "  $0 logs      - View real-time logs"
-        echo "  $0 backup    - Create backup before updates"
-        ;;
-esac
+echo "Backup completed: $DATE"
 EOF
 
-chmod +x /root/docker/manage-npm.sh
-log "✅ Management script created at /root/docker/manage-npm.sh"
+chmod +x /root/backup_docker_services.sh
 
-# Save stopped services list for later restoration
-if [ ${#STOPPED_SERVICES[@]} -gt 0 ]; then
-    printf '%s\n' "${STOPPED_SERVICES[@]}" > /root/docker/stopped_services.txt
-    log "📝 Stopped services list saved to /root/docker/stopped_services.txt"
-fi
+# Add to crontab for daily backups
+(crontab -l 2>/dev/null; echo "0 2 * * * /root/backup_docker_services.sh >> /var/log/backup.log 2>&1") | crontab -
 
-# Create update script
-log "📝 Creating update script..."
-cat > /root/docker/update-npm.sh <<'EOF'
-#!/bin/bash
+# ------------------------------
+# 完成提示
+# ------------------------------
+print_status "⏳ 等待服务启动..."
+sleep 10
 
-echo "=== Nginx Proxy Manager Update Script ==="
-echo "This will update NPM to the latest version"
-echo "A backup will be created automatically"
+# Get public IP
+IP=$(curl -s --max-time 10 https://ipinfo.io/ip || curl -s --max-time 10 https://api.ipify.org || echo "<获取IP失败>")
+
 echo
-
-read -p "Continue with update? (y/N): " -n 1 -r
+print_status "✅ 所有项目安装完成！"
 echo
-if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-    echo "Update cancelled"
-    exit 1
-fi
+print_warning "📋 重要信息："
+echo "🔐 API密钥: $API_PATH"
+echo "🔗 Sub-Store访问地址: http://$IP:3001/?api=http://$IP:3001/$API_PATH"
+echo "🔗 Nginx Proxy Manager管理面板: http://$IP:81"
+echo "    默认登录：admin@example.com / changeme"
+echo "🔗 Wallos访问地址: http://$IP:8282/"
+echo
+print_warning "🔒 安全建议："
+echo "1. 立即登录 Nginx Proxy Manager 更改默认密码"
+echo "2. 配置SSL证书和反向代理"
+echo "3. 考虑使用CDN保护真实IP"
+echo "4. 定期检查 /var/log/backup.log 确认备份正常"
+echo
+print_status "📊 服务状态检查："
+docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
 
-cd /root/docker/npm
-
-# Create backup
-echo "Creating backup..."
-/root/docker/manage-npm.sh backup
-
-# Pull latest image
-echo "Pulling latest NPM image..."
-docker compose pull
-
-# Recreate container
-echo "Recreating container with latest image..."
-docker compose up -d --force-recreate
-
-echo "✅ Update completed!"
-echo "Check status with: /root/docker/manage-npm.sh status"
+# Save important info to file
+cat > /root/docker/service_info.txt <<EOF
+部署完成时间: $(date)
+服务器IP: $IP
+Nginx Proxy Manager: http://$IP:81
+备份脚本位置: /root/backup_docker_services.sh
 EOF
 
-chmod +x /root/docker/update-npm.sh
-log "✅ Update script created at /root/docker/update-npm.sh"
-
-log "🎯 Installation completed! Nginx Proxy Manager should be accessible in a few minutes."
+print_status "📝 服务信息已保存到 /root/docker/service_info.txt"
