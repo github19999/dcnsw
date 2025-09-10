@@ -141,9 +141,16 @@ echo "└── Enable 'Force SSL' for better security"
 echo
 echo -e "${YELLOW}🔒 Security Recommendations:${NC}"
 echo "├── Change default admin password immediately"
-echo "├── Configure firewall rules (allow ports 80, 443, 81)"
+if [ "$HTTP_PORT" != "80" ] || [ "$HTTPS_PORT" != "443" ]; then
+    echo "├── Configure firewall rules (allow ports $ADMIN_PORT"
+    [ -n "$HTTP_PORT" ] && echo -n ", $HTTP_PORT"
+    [ -n "$HTTPS_PORT" ] && echo -n ", $HTTPS_PORT"
+    echo ")"
+else
+    echo "├── Configure firewall rules (allow ports 80, 443, $ADMIN_PORT)"
+fi
 echo "├── Use strong SSL certificates (Let's Encrypt recommended)"
-echo "├── Consider restricting access to port 81 (admin panel)"
+echo "├── Consider restricting access to port $ADMIN_PORT (admin panel)"
 echo "└── Regular backups of /root/docker/npm/data directory"
 echo
 echo -e "${BLUE}📂 File Locations:${NC}"
@@ -239,6 +246,12 @@ EOF
 
 chmod +x /root/docker/manage-npm.sh
 log "✅ Management script created at /root/docker/manage-npm.sh"
+
+# Save stopped services list for later restoration
+if [ ${#STOPPED_SERVICES[@]} -gt 0 ]; then
+    printf '%s\n' "${STOPPED_SERVICES[@]}" > /root/docker/stopped_services.txt
+    log "📝 Stopped services list saved to /root/docker/stopped_services.txt"
+fi
 
 # Create update script
 log "📝 Creating update script..."
